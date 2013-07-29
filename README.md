@@ -4,8 +4,8 @@ putio
 Put.io downloader
 
 
-This repo contains an python api-wrapper fro put.io, and a download script torrents/magnet-links
-The download script will start downloads on put.io, download the content, and then remove it from put.io
+This repo contains an python api-wrapper for put.io, and a download script for torrents/magnet-links.
+The download script will start downloads on put.io, download the content, and then remove it from put.io.
 
 ######Usage: 
 * putio_download.py (somefile.torrent | magnet-link) {(show-name show-season show-episode) | movie-title} {folder-id}
