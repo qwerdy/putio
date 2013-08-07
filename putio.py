@@ -185,7 +185,7 @@ class _File(object):
                 MAX_ATTEMPTS = 10
                 while f.tell() != total_length:
                     logger.warning('Download failed (%s/%s), will try to resume. Got %s of %s bytes (%s %%)'
-                                   % (attempts, MAX_ATTEMPTS, f.tell(), total_length, int((f.tell() / total_length) * 100)))
+                                   % (attempts, MAX_ATTEMPTS, f.tell(), total_length, int(f.tell() * 100 / total_length)))
                     headers = {'range': 'bytes=%s-' % (f.tell())}  # Get rest of file
                     if not zip:
                         response = self.client.request('/files/%s/download' % file_id, raw=True, headers=headers)
