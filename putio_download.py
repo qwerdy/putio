@@ -40,6 +40,7 @@ import subprocess
 import zipfile
 import datetime
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +58,7 @@ def unzip(file, target):
         for member in zf.infolist():
             zf.extract(member, target)
             newfile = '%s/%s' % (target, member.filename)
-            os.chmod(newfile, 0664)
+            os.chmod(newfile, 0o664)
     except Exception as e:
         logger.error('unzip exception:' + str(e))
         return False
@@ -69,16 +70,16 @@ def main():
     pidfile = WORK_DIR + '/putio_flexget.pid'
 
     if os.path.isfile(pidfile):
-        print '%s already exists. Exiting' % pidfile
+        print('%s already exists. Exiting' % pidfile)
         logger.warning('%s already exists. Exiting' % pidfile)
         return False
     else:
-        file(pidfile, 'w').write(pid)
+        open(pidfile, 'w').write(pid)
 
     pickle_file = find_pickle(WORK_DIR)
 
     if pickle_file is None:
-        print 'No *.putio.pickle file in %s. Exiting' % WORK_DIR
+        print('No *.putio.pickle file in %s. Exiting' % WORK_DIR)
         logger.info('No *.putio.pickle file in %s. Exiting' % WORK_DIR)
         os.unlink(pidfile)
         return False
@@ -213,13 +214,15 @@ def pickle_dump():
     #invalid parameters:
     else:
         usage_string = 'Usage: %s (somefile.torrent | magnet-link) {show-name show-season show-episode} {folder-id}' % __file__
-        print usage_string
+        print(usage_string)
         #logger.error(usage_string)
         return
 
     #logger.debug('Dumping pickle: %s to folder: %s' % (download, WORK_DIR))
     if 'show' in download:
         pickle_file = "%s.%sx%s" % ("".join(x for x in download['show'] if x.isalnum()), download['season'], download['episode'])
+    elif 'movie' in download and download['movie'] != 'auto':
+        pickle_file = "%s" % ("".join(x for x in download['movie'] if x.isalnum()))
     else:
         # Magnet title:
         start = sys.argv[1].find('dn=')
