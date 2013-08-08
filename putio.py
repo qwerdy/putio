@@ -91,7 +91,8 @@ class Client(object):
                 logger.debug(e)
                 logger.warning('A Connection error occurred (%s/3)' % i)
                 response = None
-                sleep(30)
+                if i != 3:  # Don't sleep the last time
+                    sleep(5*i)
 
     #On failed response:
         if response is None:
@@ -126,7 +127,7 @@ class _File(object):
 
     def get(self, id):
         """Returns a file's properties"""
-        d = self.client.request('/files/%i' % id, method='GET')
+        d = self.client.request('/files/%i' % id)
         if d['status'] == 'ERROR':
             return {}
         return d['file']
@@ -181,7 +182,7 @@ class _File(object):
                 self._write_data_with_progress(f, response, total_length)
 
                 #If we did not receive everything, try to download missing chunks.
-                attempts = 0
+                attempts = 1
                 MAX_ATTEMPTS = 10
                 while f.tell() != total_length:
                     logger.warning('Download failed (%s/%s), will try to resume. Got %s of %s bytes (%s %%)'
@@ -225,6 +226,13 @@ class _File(object):
             return {}
         return d
 
+    def create_folder(self, name, parent_id=''):
+        """Creates a new folder."""
+        d = self.client.request('/files/create-folder', method='POST', data={'name': str(name), 'parent_id': str(parent_id)})
+        if d['status'] == 'ERROR':
+            return {}
+        return d['file']
+
     @staticmethod
     def _write_data_with_progress(file, source, length):
         dl = 0
@@ -247,9 +255,16 @@ class _Transfer(object):
             return {}
         return d['transfers']
 
+    def clean(self):
+        """Clean completed transfers from the list."""
+        d = self.client.request('/transfers/clean', method='POST')
+        if d['status'] == 'ERROR':
+            return {}
+        return d
+
     def get(self, id):
         """Returns a transfer's properties"""
-        d = self.client.request('/transfers/%i' % id, method='GET')
+        d = self.client.request('/transfers/%i' % id)
         if d['status'] == 'ERROR':
             return {}
         return d['transfer']
