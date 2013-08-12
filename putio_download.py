@@ -27,19 +27,18 @@ GENERIC_DIR = '/tmp/download'
 
 LOG_FILE = '/tmp/put.io/putio.log'
 
+
 ########################################################
 
-
+import putio
 import sys
 import os
 import pickle
-import putio
 from time import sleep
 import logging
 import subprocess
 import zipfile
 import datetime
-
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +47,7 @@ def find_pickle(directory):
     files = os.listdir(directory)
     for f in sorted(files):
         if f.endswith('.putio.pickle'):
-            return '%s/%s' % (directory, f)
+            return os.path.join(directory, f)
     return None
 
 
@@ -57,7 +56,7 @@ def unzip(file, target):
         zf = zipfile.ZipFile(file)
         for member in zf.infolist():
             zf.extract(member, target)
-            newfile = '%s/%s' % (target, member.filename)
+            newfile = os.path.join(target, member.filename)
             os.chmod(newfile, 0o664)
     except Exception as e:
         logger.error('unzip exception:' + str(e))
@@ -76,18 +75,15 @@ def main():
     else:
         open(pidfile, 'w').write(pid)
 
-    pickle_file = find_pickle(WORK_DIR)
-
-    if pickle_file is None:
-        print('No *.putio.pickle file in %s. Exiting' % WORK_DIR)
-        logger.info('No *.putio.pickle file in %s. Exiting' % WORK_DIR)
-        os.unlink(pidfile)
-        return False
-
     client = putio.Client(TOKEN)
 
     #Go through all the downloads:
-    while(pickle_file):
+    while(True):
+        pickle_file = find_pickle(WORK_DIR)
+        if pickle_file is None:
+            logger.info('No *.putio.pickle file in %s' % WORK_DIR)
+            break
+
         logger.info('Loading pickle file: %s' % pickle_file)
         torrent = pickle.load(open(pickle_file, "rb"))
 
@@ -104,12 +100,17 @@ def main():
         transfer = client.Transfer.add_url(torrent['torrent'])
 
         if not transfer:
-            logger.error('Failed to add torrent to put.io')
-
-            # exit for now, TODO: handle this error, retry later? try next torrent?
-            #os.unlink(pidfile)
-
-            break
+            if not 'transfer_failed' in torrent:
+                logger.error('Failed to add torrent to put.io, will retry!')
+                torrent['transfer_failed'] = True
+                pickle.dump(torrent, open(pickle_file, "wb"))
+                sleep(30)
+                continue
+            else:
+                logger.error('Failed to add torrent to put.io second time, giving up!')
+                logger.info('Deleting pickle file: "%s"' % pickle_file)
+                os.unlink(pickle_file)
+                continue
 
         #Give put.io some time, then check on it
         sleep(5)
@@ -118,26 +119,36 @@ def main():
         while(True):
             transfer = client.Transfer.get(transfer['id'])
             if not transfer:
-                logger.error('Did not find transfer. Exiting')
-                os.unlink(pidfile)
-                return False
+                logger.warning('Did not find transfer. Continuing')
+                break
             if transfer['status'] in ('COMPLETED', 'SEEDING'):
                 logger.info('Torrent is completed')
                 logger.info('Download time on put.io: %s' % (datetime.datetime.now() - currenttime))
                 currenttime = datetime.datetime.now()
                 break
+            elif transfer['status'] in ('ERROR'):
+                logger.warning('Transfer failed')
+                if 'status_message' in transfer:
+                    logger.warning(transfer['status_message'])
+                client.Transfer.cancel(transfer['id'])
+                logger.info('Will retry transfer')
+                break
             logger.info('Torrent is : %s - %s/%s' % (transfer['status'], transfer['percent_done'], transfer['availability']))
             sleep(60)
+
+        #If we did not find transfer, continue main loop
+        if not transfer:
+            continue
 
         #Download locally from put.io:
         logger.info('Downloading zipped file "%s" to: %s' % (transfer['name'], WORK_DIR))
         filename = client.File.download_zip(transfer['file_id'], dest=WORK_DIR)
         if not filename:
-            if 'failed' in torrent:
+            if 'download_failed' in torrent:
                 logger.error('Download failed second time, giving up!')
             else:
                 logger.warning('Download failed! Will try again')
-                torrent['failed'] = True
+                torrent['download_failed'] = True
                 #dump failed download as a new pickle
                 pickle.dump(torrent, open(pickle_file+'.SECOND_TRY.putio.pickle', "wb"))
         else:
@@ -145,7 +156,7 @@ def main():
 
             #Set up target folder
             if 'show' in torrent:
-                download_folder = '%s/%s' % (SHOW_DIR, torrent['show'])
+                download_folder = os.path.join(SHOW_DIR, torrent['show'])
                 if not os.path.isdir(download_folder):
                     logger.info('Creating directory for new show: "%s"' % download_folder)
                     os.makedirs(download_folder)
@@ -156,7 +167,7 @@ def main():
 
             #Extract zip file
             if os.path.isdir(download_folder) and os.access(download_folder, os.W_OK):
-                show_zip = '%s/%s' % (WORK_DIR, filename)
+                show_zip = os.path.join(WORK_DIR, filename)
                 logger.info('Extracting file: "%s" to "%s"' % (show_zip, download_folder))
 
                 if unzip(show_zip, download_folder):
@@ -175,9 +186,6 @@ def main():
         #Delete old pickle file
         logger.info('Deleting pickle file: "%s"' % pickle_file)
         os.unlink(pickle_file)
-
-        #More downloads?
-        pickle_file = find_pickle(WORK_DIR)
 
     logger.info('No more files to start, exiting')
     os.unlink(pidfile)
@@ -249,13 +257,13 @@ def pickle_dump():
         if len(pickle_file) > 150:  # Not too long
             pickle_file = pickle_file[:150]
 
-    pickle.dump(download, open('%s/%s.putio.pickle' % (WORK_DIR, pickle_file), "wb"))
+    pickle.dump(download, open('%s.putio.pickle' % os.path.join(WORK_DIR, pickle_file), "wb"))
 
     #Launch self as new process without parameter, so flexget stop waiting.
     my_file_name = os.path.abspath(__file__)
     output = open(LOG_FILE, 'a')
     logger.debug('Starting myself as subprocess: %s' % my_file_name)
-    subprocess.Popen(my_file_name, stdout=output, stderr=output)
+    subprocess.Popen(my_file_name, stdout=output, stderr=output, close_fds=True)
     output.close()
 
 
