@@ -269,6 +269,14 @@ class _Transfer(object):
             return {}
         return d['transfer']
 
+    def cancel(self, id):
+        """Deletes the given transfers."""
+        d = self.client.request('/transfers/cancel', method='POST',
+                                data=dict(transfer_ids=id))
+        if d['status'] == 'ERROR':
+            return {}
+        return d['transfer']
+
     def add_url(self, url, parent_id=0, extract=False, callback_url=None):
         """Adds a new transfer"""
         d = self.client.request('/transfers/add', method='POST', data=dict(
