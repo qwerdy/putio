@@ -31,6 +31,7 @@ LOG_FILE = '/tmp/put.io/putio.log'
 ########################################################
 
 import putio
+
 import sys
 import os
 import pickle
@@ -73,9 +74,11 @@ def main():
         logger.warning('%s already exists. Exiting' % pidfile)
         return False
     else:
+        client = putio.Client(TOKEN)
+        if not client.check_token():
+            logger.error('Invalid token. Exiting')
+            return False
         open(pidfile, 'w').write(pid)
-
-    client = putio.Client(TOKEN)
 
     #Go through all the downloads:
     while(True):
@@ -256,6 +259,9 @@ def pickle_dump():
         pickle_file = "".join(x for x in file_name if x.isalnum())  # safe filename
         if len(pickle_file) > 150:  # Not too long
             pickle_file = pickle_file[:150]
+
+    if 'movie' in download and download['movie'] == 'auto':
+        download['movie'] = pickle_file
 
     pickle.dump(download, open('%s.putio.pickle' % os.path.join(WORK_DIR, pickle_file), "wb"))
 
