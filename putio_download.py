@@ -94,7 +94,7 @@ def main():
             break
 
         logger.info('Loading pickle file: %s' % pickle_file)
-        torrent = pickle.load(open(pickle_file, "rb"))
+        torrent = pickle.load(open(pickle_file, 'rb'))
 
         #upload torrent to put.io
         if 'show' in torrent:
@@ -203,7 +203,7 @@ def main():
 
 def pickle_dump():
     #If it is a tv-show episode: (torrent|magnet) show-name show-season show-episode {folder}
-    if len(sys.argv) in (5, 6) and (sys.argv[1].find('.torrent') > 0 or sys.argv[1].startswith('magnet:')) and sys.argv[3].isdigit() and sys.argv[4].isdigit():
+    if len(sys.argv) in (5, 6) and (sys.argv[1].startswith('http://') or sys.argv[1].startswith('https://') or sys.argv[1].startswith('magnet:')) and sys.argv[3].isdigit() and sys.argv[4].isdigit():
         folder = sys.argv[5] if len(sys.argv) == 6 and sys.argv[5].isdigit() else 0
 
         download = {
@@ -214,7 +214,7 @@ def pickle_dump():
             "folder": folder
         }
     #If it is a movie: (torrent|magnet) movie-title {folder}
-    elif len(sys.argv) in (3, 4) and (sys.argv[1].find('.torrent') > 0 or sys.argv[1].startswith('magnet:')) and not sys.argv[2].isdigit():
+    elif len(sys.argv) in (3, 4) and (sys.argv[1].startswith('http://') or sys.argv[1].startswith('magnet:')) and not sys.argv[2].isdigit():
         folder = sys.argv[3] if len(sys.argv) == 4 and sys.argv[3].isdigit() else 0
         download = {
             "torrent": sys.argv[1],
@@ -222,7 +222,7 @@ def pickle_dump():
             "folder": folder
         }
     #If it is a generic download: (torrent|magnet) {folder}
-    elif len(sys.argv) in (2, 3) and (sys.argv[1].find('.torrent') > 0 or sys.argv[1].startswith('magnet:')):
+    elif len(sys.argv) in (2, 3) and (sys.argv[1].startswith('http://') or sys.argv[1].startswith('magnet:')):
         folder = sys.argv[2] if len(sys.argv) == 3 and sys.argv[2].isdigit() else 0
         download = {
             "torrent": sys.argv[1],
