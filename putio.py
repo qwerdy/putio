@@ -30,7 +30,7 @@ from time import sleep
 
 BASE_URL = 'https://api.put.io/v2'
 
-logger = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 class Client(object):
@@ -77,7 +77,7 @@ class Client(object):
         headers['Accept'] = 'application/json'
 
         url = BASE_URL + path
-        logger.debug('url: %s', url)
+        LOGGER.debug('url: %s', url)
 
         #Try 3 times:
         for i in range(1, 4):
@@ -85,18 +85,18 @@ class Client(object):
                 response = self.session.request(
                     method, url, params=params, data=data, files=files,
                     headers=headers, allow_redirects=True, stream=raw)
-                logger.debug('response: %s', response)
+                LOGGER.debug('response: %s', response)
                 break
             except requests.exceptions.ConnectionError as e:
-                logger.debug(e)
-                logger.warning('A Connection error occurred (%s/3)' % i)
+                LOGGER.debug(e)
+                LOGGER.warning('A Connection error occurred (%s/3)' % i)
                 response = None
                 if i != 3:  # Don't sleep the last time
                     sleep(5*i)
 
     #On failed response:
         if response is None:
-            logger.error('Failed to connect %s times, giving up' % i)
+            LOGGER.error('Failed to connect %s times, giving up' % i)
             if raw:
                 return
             else:
@@ -108,12 +108,12 @@ class Client(object):
         if raw:
             return response
 
-        logger.debug('content: %s', response.content)
+        LOGGER.debug('content: %s', response.content)
         try:
             response = json.loads(response.content)
         except ValueError:
-            logger.error('Received invalid JSON from put.io')
-            logger.error('invalid-content: %s', response.content)
+            LOGGER.error('Received invalid JSON from put.io')
+            LOGGER.error('invalid-content: %s', response.content)
             response = {'status': 'ERROR',
                         'error_type': 'JSON ValueError',
                         'error_message': 'Received invalid JSON from put.io'}
@@ -164,7 +164,7 @@ class _File(object):
             response = self.client.request('/files/zip', params={'file_ids': str(file_id)}, raw=True)
 
         if not response or not response.ok:
-            logger.info('Failed to download file with id: %s', file_id)
+            LOGGER.info('Failed to download file with id: %s', file_id)
             return
 
         filename = re.match(
@@ -180,20 +180,26 @@ class _File(object):
                 f.write(response.content)  # No error checkking can be done, just dump data
             else:
                 total_length = int(total_length)
-                logger.info('Total size of file: %s MB' % (total_length / 1024 / 1024))
-                if not f.tell():
+                LOGGER.info('Total size of file: %s MB' % (total_length / 1024 / 1024))
+                attempts = 1
+                MAX_ATTEMPTS = 5
+                orig_file_size = f.tell()
+
+                if not orig_file_size:
                     #New file, start downloading
                     self._write_data_with_progress(f, response, total_length)
                 else:
-                    logger.info('Continuing previously partially downloaded file: %s' % filename)
+                    LOGGER.info('Continuing previously partially downloaded file: %s' % filename)
+                    attempts = 0
 
                 #If we did not receive everything, try to download missing chunks.
-                attempts = 1
-                MAX_ATTEMPTS = 5
-                old_tell = f.tell()
+                old_tell = orig_file_size
                 while f.tell() != total_length:
-                    logger.warning('Download failed (%s/%s), will try to resume. Got %s of %s bytes (%s %%)'
-                                   % (attempts, MAX_ATTEMPTS, f.tell(), total_length, int(f.tell() * 100 / total_length)))
+                    if attempts == 0:
+                        attempts += 1
+                    else:
+                        LOGGER.warning('Download failed (%s/%s), will try to resume. Got %s of %s bytes (%s %%)'
+                                       % (attempts, MAX_ATTEMPTS, f.tell(), total_length, int(f.tell() * 100 / total_length)))
                     headers = {'range': 'bytes=%s-' % (f.tell())}  # Get rest of file
                     if not zip:
                         response = self.client.request('/files/%s/download' % file_id, raw=True, headers=headers)
@@ -201,17 +207,17 @@ class _File(object):
                         response = self.client.request('/files/zip', params={'file_ids': str(file_id)}, raw=True, headers=headers)
 
                     if not response or response.headers.get('Content-Length') is None:
-                        logger.error('Failed to resume download')
+                        LOGGER.error('Failed to resume download')
                         return
 
                     partial_length = int(response.headers.get('Content-Length'))
-                    logger.info('Getting partial file with size: %s MB' % (partial_length / 1024 / 1024))
+                    LOGGER.info('Getting partial file with size: %s MB' % (partial_length / 1024 / 1024))
                     self._write_data_with_progress(f, response, partial_length)
 
                     #If we did not progress, stop trying after MAX_ATTEMPTS
                     if f.tell() == old_tell:
                         if attempts == MAX_ATTEMPTS:  # Give up:
-                            logger.error('Failed to download rest of file after %s tries. Got %s of %s bytes' % (attempts, f.tell(), total_length))
+                            LOGGER.error('Failed to download rest of file after %s tries. Got %s of %s bytes' % (attempts, f.tell(), total_length))
                             return
                         attempts += 1
                     #If we DID progress, reset variables.
@@ -220,8 +226,8 @@ class _File(object):
                         attempts = 1
 
                 download_time = datetime.datetime.now() - current_time
-                download_speed = int(f.tell() / download_time.total_seconds() / 1024)  # in KB/s
-                logger.info('Download time: %s, avg speed: %s KB/s' % (download_time, download_speed))
+                download_speed = int((f.tell() - orig_file_size) / download_time.total_seconds() / 1024)  # in KB/s
+                LOGGER.info('Download time: %s, avg speed: %s KB/s' % (download_time, download_speed))
         return filename
 
     def download_zip(self, file_id, dest='.'):
@@ -246,13 +252,32 @@ class _File(object):
         return d['file']
 
     @staticmethod
-    def _write_data_with_progress(file, source, length):
-        dl = 0
-        chunk = length / 100 or 1
-        for data in source.iter_content(chunk):
-            dl += chunk
-            file.write(data)
-            logger.info('Download progress: %s%%' % (100 * dl / length))
+    def _write_data_with_progress(target_file, source, length):
+        """Download a file with progress"""
+        start_time = datetime.datetime.now()
+        downloaded = 0
+        chunks = 0
+        steps = 1
+        wanted_chunksize = 1024*1024
+        chunk = (length / 4) or 1
+
+        while chunk > wanted_chunksize:
+            chunk /= 4
+            steps *= 2
+
+        chunk_step = length / (1024*1024) / steps
+        if not chunk_step:
+            chunk_step = 1
+
+        LOGGER.info('Download chunksize: %s, steps: %s (%sMB)', wanted_chunksize, steps, chunk_step)
+        for data in source.iter_content(wanted_chunksize):
+            downloaded += wanted_chunksize
+            target_file.write(data)
+            chunks += 1
+            if not chunks % chunk_step:
+                download_time = datetime.datetime.now() - start_time
+                download_speed = int((chunks * wanted_chunksize) / download_time.total_seconds() / 1024)  # in KB/s
+                LOGGER.info('Download progress: %.1f%% (%dMB) speed: %d KB/s - (%s)', (100.0 * downloaded / length), downloaded/1024/1024, download_speed, download_time)
 
 
 class _Transfer(object):

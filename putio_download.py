@@ -19,6 +19,7 @@ It is used as an execution script in flexget.
 ########################################################
 
 TOKEN = 'yourtokenhere'
+PROWLKEY = 'prowlkeyhere'
 
 WORK_DIR = '/tmp/put.io'
 SHOW_DIR = '/tmp/download/serier'
@@ -33,13 +34,16 @@ LOG_FILE = '/tmp/put.io/putio.log'
 import putio
 
 import sys
+import argparse
 import os
 import pickle
-from time import sleep
+from time import sleep, time
 import logging
 import subprocess
 import zipfile
 import datetime
+
+import prowlpy
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,9 @@ def main():
     pid = str(os.getpid())
     pidfile = WORK_DIR + '/putio_flexget.pid'
 
+    prowl = prowlpy.Prowl(PROWLKEY) if PROWLKEY else None
+    prowl_msg = ''
+
     try:
         fd = os.open(pidfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
     except OSError:
@@ -88,6 +95,7 @@ def main():
 
     #Go through all the downloads:
     while(True):
+        logger.info('#' * 80)
         pickle_file = find_pickle(WORK_DIR)
         if pickle_file is None:
             logger.info('No *.putio.pickle file in %s' % WORK_DIR)
@@ -101,8 +109,13 @@ def main():
             logger.info('Starting show: "%s season %s episode %s" on put.io' % (torrent['show'], torrent['season'], torrent['episode']))
         elif 'movie' in torrent:
             logger.info('Starting movie: "%s" on put.io' % torrent['movie'])
+        elif 'music' in torrent:
+            logger.info('Starting music: "%s" on put.io' % torrent['torrent'])
         else:
             logger.info('Starting generic: %s on put.io' % torrent['torrent'])
+
+        if 'prowl' in torrent:
+            logger.info('Prowl notification ON')
 
         currenttime = datetime.datetime.now()
         logger.info('Datetime: %s' % currenttime)
@@ -171,6 +184,8 @@ def main():
                     os.makedirs(download_folder)
             elif 'movie' in torrent:
                 download_folder = MOVIE_DIR
+            elif 'music' in torrent:
+                download_folder = MUSIC_DIR
             else:
                 download_folder = GENERIC_DIR
 
@@ -182,6 +197,8 @@ def main():
                 if unzip(show_zip, download_folder):
                     logger.info('Done extracting, removing zip file: "%s"' % show_zip)
                     os.unlink(show_zip)
+                    if 'prowl' in torrent:
+                        prowl.add('Python', 'Download done', filename, 0)
                 else:
                     logger.error('Extracting failed, check %s for partially extracted files' % download_folder)
                     logger.error('zip folder was NOT deleted: %s' % show_zip)
@@ -192,9 +209,10 @@ def main():
         logger.info('Deleting file on put.io with id: %s' % transfer['file_id'])
         client.File.delete(transfer['file_id'])
 
-        #Delete old pickle file
-        logger.info('Deleting pickle file: "%s"' % pickle_file)
-        os.unlink(pickle_file)
+        if os.path.isfile(pickle_file):
+            #Delete old pickle file
+            logger.info('Deleting pickle file: "%s"' % pickle_file)
+            os.unlink(pickle_file)
 
     logger.info('No more files to start, exiting')
     os.unlink(pidfile)
@@ -202,38 +220,47 @@ def main():
 
 
 def pickle_dump():
-    #If it is a tv-show episode: (torrent|magnet) show-name show-season show-episode {folder}
-    if len(sys.argv) in (5, 6) and (sys.argv[1].startswith('http://') or sys.argv[1].startswith('https://') or sys.argv[1].startswith('magnet:')) and sys.argv[3].isdigit() and sys.argv[4].isdigit():
-        folder = sys.argv[5] if len(sys.argv) == 6 and sys.argv[5].isdigit() else 0
+    parser = argparse.ArgumentParser(description='Download torrent/magnet using put.io')
+    parser.add_argument('url', help='URL to torrent or magnet')
 
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('-m', '--moviename', help='Name of movie, triggers download to movie folder')
+    group.add_argument('-t', '--showname', help='Name of the TV show, used to match on myepisodes')
+
+    parser.add_argument('-s', '--season', help='TV show season', type=int)
+    parser.add_argument('-e', '--episode', help='TV show episode', type=int)
+    parser.add_argument('-p', '--prowl', help='Send prowl on done', action='store_true')
+    parser.add_argument('-M', '--music', help='Download to music folder', action='store_true')
+
+    args = parser.parse_args()
+
+    if args.showname and args.season and args.episode:
         download = {
-            "torrent": sys.argv[1],
-            "show": sys.argv[2],
-            "season": sys.argv[3],
-            "episode": sys.argv[4],
-            "folder": folder
+            'torrent': args.url,
+            'show': args.showname,
+            'season': args.season,
+            'episode': args.episode
         }
-    #If it is a movie: (torrent|magnet) movie-title {folder}
-    elif len(sys.argv) in (3, 4) and (sys.argv[1].startswith('http://') or sys.argv[1].startswith('magnet:')) and not sys.argv[2].isdigit():
-        folder = sys.argv[3] if len(sys.argv) == 4 and sys.argv[3].isdigit() else 0
+    #If it is a movie
+    elif args.moviename:
         download = {
-            "torrent": sys.argv[1],
-            "movie": sys.argv[2],
-            "folder": folder
+            'torrent': args.url,
+            'movie': args.moviename,
         }
-    #If it is a generic download: (torrent|magnet) {folder}
-    elif len(sys.argv) in (2, 3) and (sys.argv[1].startswith('http://') or sys.argv[1].startswith('magnet:')):
-        folder = sys.argv[2] if len(sys.argv) == 3 and sys.argv[2].isdigit() else 0
+    #If it is a music
+    elif args.music:
         download = {
-            "torrent": sys.argv[1],
-            "folder": folder
+            'torrent': args.url,
+            'music': True
         }
-    #invalid parameters:
+    #If it is a generic download
     else:
-        usage_string = 'Usage: %s (somefile.torrent | magnet-link) {show-name show-season show-episode} {folder-id}' % __file__
-        print(usage_string)
-        #logger.error(usage_string)
-        return
+        download = {
+            'torrent': args.url
+        }
+
+    if args.prowl:
+         download['prowl'] = True
 
     #logger.debug('Dumping pickle: %s to folder: %s' % (download, WORK_DIR))
     if 'show' in download:
@@ -268,6 +295,10 @@ def pickle_dump():
 
     if 'movie' in download and download['movie'] == 'auto':
         download['movie'] = pickle_file
+
+
+    timestamp = str(int(time()))
+    pickle_file = timestamp + '.' + pickle_file
 
     pickle.dump(download, open('%s.putio.pickle' % os.path.join(WORK_DIR, pickle_file), "wb"))
 
