@@ -49,11 +49,18 @@ class Client(object):
 
         self.File = _File(self)  # Contain file actions
         self.Transfer = _Transfer(self)  # Contain transfer actions
+        self._last_response = None
 
     def check_token(self):
         """Returns True if token is valid, False otherwise"""
         r = self.request('/account/info')
         return 'status' in r and r['status'] == 'OK'
+
+    def sa_request_get(self, url, raw):
+        """
+        "Standalone" get request (not using session)
+        """
+        return requests.get(url, allow_redirects=True, stream=raw)
 
     def request(self, path, method='GET', params=None, data=None, files=None,
                 headers=None, raw=False):
@@ -93,6 +100,8 @@ class Client(object):
                 response = None
                 if i != 3:  # Don't sleep the last time
                     sleep(5*i)
+
+        self._last_response = response
 
     #On failed response:
         if response is None:
@@ -153,18 +162,21 @@ class _File(object):
         return d['file']
 
     #TODO: rewrite this function ...... !!
-    def download(self, file_id, dest='.', zip=False):
+    def download(self, file_id, dest='.', url=False):
         """Download the contents of the file
 
         Returns the filename on success, or False otherwise.
         """
-        if not zip:
+        if not url:
             response = self.client.request('/files/%s/download' % file_id, raw=True)
         else:
-            response = self.client.request('/files/zip', params={'file_ids': str(file_id)}, raw=True)
+            response = self.client.sa_request_get(url, raw=True)
 
         if not response or not response.ok:
-            LOGGER.info('Failed to download file with id: %s', file_id)
+            if url:
+                LOGGER.error('Failed to download url: %s', url)
+            else:
+                LOGGER.error('Failed to download file with id: %s', file_id)
             return
 
         filename = re.match(
@@ -201,10 +213,10 @@ class _File(object):
                         LOGGER.warning('Download failed (%s/%s), will try to resume. Got %s of %s bytes (%s %%)'
                                        % (attempts, MAX_ATTEMPTS, f.tell(), total_length, int(f.tell() * 100 / total_length)))
                     headers = {'range': 'bytes=%s-' % (f.tell())}  # Get rest of file
-                    if not zip:
+                    if not url:
                         response = self.client.request('/files/%s/download' % file_id, raw=True, headers=headers)
                     else:
-                        response = self.client.request('/files/zip', params={'file_ids': str(file_id)}, raw=True, headers=headers)
+                        response = self.client.request(url, raw=True, headers=headers)
 
                     if not response or response.headers.get('Content-Length') is None:
                         LOGGER.error('Failed to resume download')
@@ -235,7 +247,28 @@ class _File(object):
 
         Returns the filename on success, or False otherwise.
         """
-        return self.download(file_id, dest, zip=True)
+        response = self.client.request('/files/zip', params={'file_ids': str(file_id)})
+
+        if not response or not 'zip_id' in response:
+            LOGGER.error('Failed to request zip file for file: %s', file_id)
+            return
+
+        zip_id = response['zip_id']
+
+        sleep(3)
+
+        response = self.client.request('/files/zipcheck/%s' % zip_id)
+        while response and 'status' in response and response['status'] == 'OK':
+            if 'url' in response and response['url']:
+                LOGGER.debug('Got zip url: %s', response['url'])
+                return self.download(file_id, dest, url=response['url'])
+
+            LOGGER.debug('Waiting for zipcheck')
+            sleep(5)
+            response = self.client.request('/files/zipcheck/%s' % zip_id)
+
+        LOGGER.error('Failed zipcheck for zip: %s (file id: %s)', zip_id, file_id)
+        return False
 
     def delete(self, file_id):
         """Deletes given files"""
