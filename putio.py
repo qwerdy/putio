@@ -56,11 +56,11 @@ class Client(object):
         r = self.request('/account/info')
         return 'status' in r and r['status'] == 'OK'
 
-    def sa_request_get(self, url, raw):
+    def sa_request_get(self, url, raw=False, headers=None):
         """
         "Standalone" get request (not using session)
         """
-        return requests.get(url, allow_redirects=True, stream=raw)
+        return requests.get(url, allow_redirects=True, stream=raw, headers=headers)
 
     def request(self, path, method='GET', params=None, data=None, files=None,
                 headers=None, raw=False):
@@ -185,6 +185,10 @@ class _File(object):
         filename = filename.groups()[0] or filename.groups()[1]
         total_length = response.headers.get('Content-Length')
 
+        if total_length is not None and not total_length:
+            LOGGER.warning('content-length == 0. Exiting')
+            return False
+
         with open(os.path.join(dest, filename), 'ab') as f:
             current_time = datetime.datetime.now()
             if total_length is None:
@@ -216,7 +220,7 @@ class _File(object):
                     if not url:
                         response = self.client.request('/files/%s/download' % file_id, raw=True, headers=headers)
                     else:
-                        response = self.client.request(url, raw=True, headers=headers)
+                        response = self.client.sa_request_get(url, raw=True, headers=headers)
 
                     if not response or response.headers.get('Content-Length') is None:
                         LOGGER.error('Failed to resume download')
@@ -251,16 +255,27 @@ class _File(object):
 
         if not response or not 'zip_id' in response:
             LOGGER.error('Failed to request zip file for file: %s', file_id)
-            return
+            return False
 
         zip_id = response['zip_id']
+        LOGGER.debug('Got zip id: %s', zip_id)
 
         sleep(3)
 
         response = self.client.request('/files/zipcheck/%s' % zip_id)
-        while response and 'status' in response and response['status'] == 'OK':
+        while response:
+            if not 'status' in response:
+                LOGGER.error('No "status" in response')
+                return False
+
+            if response['status'] != 'OK':
+                LOGGER.error('Status not ok: %s', response['status'])
+                return False
+
             if 'url' in response and response['url']:
                 LOGGER.debug('Got zip url: %s', response['url'])
+                if 'size' in response:
+                    LOGGER.debug('zip size: %s', response['size'])
                 return self.download(file_id, dest, url=response['url'])
 
             LOGGER.debug('Waiting for zipcheck')
