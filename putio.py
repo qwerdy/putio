@@ -294,7 +294,7 @@ class _File(object):
 
         sleep(3)
 
-        response = self.client.request('/files/zipcheck/%s' % zip_id)
+        response = self.client.request('/zips/%s' % zip_id)
         while response:
             if not 'status' in response:
                 LOGGER.error('No "status" in response')
@@ -313,11 +313,11 @@ class _File(object):
                     return False
                 return self.download(file_id, dest, url=response['url'], progress_callback=progress_callback)
 
-            LOGGER.debug('Waiting for zipcheck')
+            LOGGER.debug('Waiting for zip')
             sleep(5)
-            response = self.client.request('/files/zipcheck/%s' % zip_id)
+            response = self.client.request('/zipsq/%s' % zip_id)
 
-        LOGGER.error('Failed zipcheck for zip: %s (file id: %s)', zip_id, file_id)
+        LOGGER.error('Failed zip for zip: %s (file id: %s)', zip_id, file_id)
         return False
 
     def delete(self, file_id):
