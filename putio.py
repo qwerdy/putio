@@ -63,7 +63,7 @@ class Client(object):
         return requests.get(url, allow_redirects=True, stream=raw, headers=headers)
 
     def request(self, path, method='GET', params=None, data=None, files=None,
-                headers=None, raw=False):
+                headers=None, raw=False, timeout=60):
         """
         Wrapper around requests.request()
 
@@ -91,7 +91,7 @@ class Client(object):
             try:
                 response = self.session.request(
                     method, url, params=params, data=data, files=files,
-                    headers=headers, allow_redirects=True, stream=raw)
+                    headers=headers, allow_redirects=True, stream=raw, timeout=timeout)
                 LOGGER.debug('response: %s', response)
                 break
             except requests.exceptions.ConnectionError as e:
