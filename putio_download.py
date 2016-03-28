@@ -19,12 +19,13 @@ It is used as an execution script in flexget.
 ########################################################
 
 TOKEN = 'yourtokenhere'
-PROWLKEY = 'prowlkeyhere'
+MQTT_SERVER = 'localhost'
 
 WORK_DIR = '/tmp/put.io'
 SHOW_DIR = '/tmp/download/serier'
 MOVIE_DIR = '/tmp/download/filmer'
 GENERIC_DIR = '/tmp/download'
+MUSIC_DIR = '/mnt/download/disk/downloads/musikk'
 
 LOG_FILE = '/tmp/put.io/putio.log'
 
@@ -42,8 +43,8 @@ import logging
 import subprocess
 import zipfile
 import datetime
+import paho.mqtt.publish as publish
 
-import prowlpy
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +69,12 @@ def unzip(file, target):
         return False
     return True
 
+def progress_callback(info):
+    publish.single('myflexget/download/progress', str(info['string']), hostname=MQTT_SERVER)
 
 def main():
     pid = str(os.getpid())
     pidfile = WORK_DIR + '/putio_flexget.pid'
-
-    prowl = prowlpy.Prowl(PROWLKEY) if PROWLKEY else None
-    prowl_msg = ''
 
     try:
         fd = os.open(pidfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
@@ -104,18 +104,25 @@ def main():
         logger.info('Loading pickle file: %s' % pickle_file)
         torrent = pickle.load(open(pickle_file, 'rb'))
 
+        downloadName = torrent['torrent']
+
         #upload torrent to put.io
         if 'show' in torrent:
-            logger.info('Starting show: "%s season %s episode %s" on put.io' % (torrent['show'], torrent['season'], torrent['episode']))
+            s = 'Starting show: "%s season %s episode %s" on put.io' % (torrent['show'], torrent['season'], torrent['episode'])
+            downloadName = '%s (s%se%s)' % (torrent['show'], torrent['season'], torrent['episode'])
         elif 'movie' in torrent:
-            logger.info('Starting movie: "%s" on put.io' % torrent['movie'])
+            s = 'Starting movie: "%s" on put.io' % (torrent['movie'])
+            downloadName = torrent['movie']
         elif 'music' in torrent:
-            logger.info('Starting music: "%s" on put.io' % torrent['torrent'])
+            s = 'Starting music: "%s" on put.io' % (torrent['torrent'])
         else:
-            logger.info('Starting generic: %s on put.io' % torrent['torrent'])
+            s = 'Starting generic: %s on put.io' % (torrent['torrent'])
 
-        if 'prowl' in torrent:
-            logger.info('Prowl notification ON')
+        logger.info(s)
+
+        if 'mqtt' in torrent:
+            logger.info('MQTT notification ON')
+            publish.single('myflexget/download', str(s), hostname=MQTT_SERVER)
 
         currenttime = datetime.datetime.now()
         logger.info('Datetime: %s' % currenttime)
@@ -123,15 +130,26 @@ def main():
 
         if not transfer:
             if not 'transfer_failed' in torrent:
-                logger.error('Failed to add torrent to put.io, will retry!')
+                s = 'Failed to add torrent to put.io, will retry!'
+                logger.error(s)
+                if 'mqtt' in torrent:
+                    publish.single('myflexget/download', s, hostname=MQTT_SERVER)
+
                 torrent['transfer_failed'] = True
                 pickle.dump(torrent, open(pickle_file, "wb"))
-                sleep(30)
+                sleep(15)
                 continue
             else:
-                logger.error('Failed to add torrent to put.io second time, giving up!')
-                logger.info('Deleting pickle file: "%s"' % pickle_file)
-                os.unlink(pickle_file)
+                s = 'Failed to add torrent to put.io second time, giving up!'
+                logger.error(s)
+                if 'mqtt' in torrent:
+                    publish.single('myflexget/download', s, hostname=MQTT_SERVER)
+
+                logger.info('Disabling pickle file: "%s"' % pickle_file)
+                ret = os.rename(pickle_file, pickle_file+'.transfer_failed')
+                if not ret:
+                    logger.info('Deleting pickle file: "%s"' % pickle_file)
+                    os.unlink(pickle_file)
                 continue
 
         #Give put.io some time, then check on it
@@ -155,7 +173,11 @@ def main():
                 client.Transfer.cancel(transfer['id'])
                 logger.info('Will retry transfer')
                 break
-            logger.info('Torrent is : %s - %s/%s' % (transfer['status'], transfer['percent_done'], transfer['availability']))
+
+            s = 'Torrent is : %s - %s/%s' % (transfer['status'], transfer['percent_done'], transfer['availability'])
+            logger.info(s)
+            if 'mqtt' in torrent:
+                publish.single('myflexget/download/progress', str(s), hostname=MQTT_SERVER)
             sleep(60)
 
         #If we did not find transfer, continue main loop
@@ -164,10 +186,14 @@ def main():
 
         #Download locally from put.io:
         logger.info('Downloading zipped file "%s" to: %s' % (transfer['name'], WORK_DIR))
-        filename = client.File.download_zip(transfer['file_id'], dest=WORK_DIR)
+        filename = client.File.download_zip(transfer['file_id'], dest=WORK_DIR, progress_callback=progress_callback)
         if not filename:
             if 'download_failed' in torrent:
-                logger.error('Download failed second time, giving up!')
+                s = 'Download failed second time, giving up!'
+                logger.error(s)
+                pickle.dump(torrent, open(pickle_file+'.putio.pickle.download_failed', "wb"))
+                if 'mqtt' in torrent:
+                    publish.single('myflexget/download', s, hostname=MQTT_SERVER)
             else:
                 logger.warning('Download failed! Will try again')
                 torrent['download_failed'] = True
@@ -195,15 +221,24 @@ def main():
                 logger.info('Extracting file: "%s" to "%s"' % (show_zip, download_folder))
 
                 if unzip(show_zip, download_folder):
-                    logger.info('Done extracting, removing zip file: "%s"' % show_zip)
+                    logger.info('Done extracting, removing zip file: "%s"' % (show_zip))
                     os.unlink(show_zip)
-                    if 'prowl' in torrent:
-                        prowl.add('Python', 'Download done', filename, 0)
+                    if 'mqtt' in torrent:
+                        s = str('Download done: %s' % (transfer['name']))
+                        publish.single('myflexget/download', s, hostname=MQTT_SERVER)
                 else:
-                    logger.error('Extracting failed, check %s for partially extracted files' % download_folder)
+                    s = 'Extracting failed, check %s for partially extracted files' % (download_folder)
+                    logger.error(s)
                     logger.error('zip folder was NOT deleted: %s' % show_zip)
+
+                    if 'mqtt' in torrent:
+                        publish.single('myflexget/download', s, hostname=MQTT_SERVER)
             else:
-                logger.warning('No access to "%s", file will not be extracted' % download_folder)
+                s = 'No access to "%s", file will not be extracted' % (download_folder)
+                logger.warning(s)
+                if 'mqtt' in torrent:
+                    publish.single('myflexget/download', s, hostname=MQTT_SERVER)
+
 
         #Always delete file on put.io, even on failed downloads.
         logger.info('Deleting file on put.io with id: %s' % transfer['file_id'])
@@ -229,7 +264,7 @@ def pickle_dump():
 
     parser.add_argument('-s', '--season', help='TV show season', type=int)
     parser.add_argument('-e', '--episode', help='TV show episode', type=int)
-    parser.add_argument('-p', '--prowl', help='Send prowl on done', action='store_true')
+    parser.add_argument('-q', '--mqtt', help='Send mqtt on done', action='store_true')
     parser.add_argument('-M', '--music', help='Download to music folder', action='store_true')
 
     args = parser.parse_args()
@@ -259,8 +294,8 @@ def pickle_dump():
             'torrent': args.url
         }
 
-    if args.prowl:
-         download['prowl'] = True
+    if args.mqtt:
+         download['mqtt'] = True
 
     #logger.debug('Dumping pickle: %s to folder: %s' % (download, WORK_DIR))
     if 'show' in download:
