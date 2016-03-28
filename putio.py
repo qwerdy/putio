@@ -162,7 +162,7 @@ class _File(object):
         return d['file']
 
     #TODO: rewrite this function ...... !!
-    def download(self, file_id, dest='.', url=False):
+    def download(self, file_id, dest='.', url=False, progress_callback=None):
         """Download the contents of the file
 
         Returns the filename on success, or False otherwise.
@@ -174,9 +174,17 @@ class _File(object):
 
         if not response or not response.ok:
             if url:
-                LOGGER.error('Failed to download url: %s', url)
+                s = 'Failed to download url: %s' % (url)
             else:
-                LOGGER.error('Failed to download file with id: %s', file_id)
+                s = 'Failed to download file with id: %s' % (file_id)
+
+            LOGGER.error(s)
+
+            if progress_callback:
+                progress_callback({
+                    'string': s
+                })
+
             return
 
         filename = re.match(
@@ -203,7 +211,7 @@ class _File(object):
 
                 if not orig_file_size:
                     #New file, start downloading
-                    self._write_data_with_progress(f, response, total_length)
+                    self._write_data_with_progress(f, response, total_length, progress_callback=progress_callback)
                 else:
                     LOGGER.info('Continuing previously partially downloaded file: %s' % filename)
                     attempts = 0
@@ -223,17 +231,33 @@ class _File(object):
                         response = self.client.sa_request_get(url, raw=True, headers=headers)
 
                     if not response or response.headers.get('Content-Length') is None:
-                        LOGGER.error('Failed to resume download')
+                        s = 'Failed to resume download'
+
+                        LOGGER.error(s)
+
+                        if progress_callback:
+                            progress_callback({
+                                'string': s
+                            })
+
                         return
 
                     partial_length = int(response.headers.get('Content-Length'))
                     LOGGER.info('Getting partial file with size: %s MB' % (partial_length / 1024 / 1024))
-                    self._write_data_with_progress(f, response, partial_length)
+                    self._write_data_with_progress(f, response, partial_length, progress_callback=progress_callback)
 
                     #If we did not progress, stop trying after MAX_ATTEMPTS
                     if f.tell() == old_tell:
                         if attempts == MAX_ATTEMPTS:  # Give up:
-                            LOGGER.error('Failed to download rest of file after %s tries. Got %s of %s bytes' % (attempts, f.tell(), total_length))
+                            s = 'Failed to download rest of file after %s tries. Got %s of %s bytes' % (attempts, f.tell(), total_length)
+
+                            LOGGER.error(s)
+
+                            if progress_callback:
+                                progress_callback({
+                                    'string': s
+                                })
+
                             return
                         attempts += 1
                     #If we DID progress, reset variables.
@@ -242,11 +266,19 @@ class _File(object):
                         attempts = 1
 
                 download_time = datetime.datetime.now() - current_time
-                download_speed = int((f.tell() - orig_file_size) / download_time.total_seconds() / 1024)  # in KB/s
-                LOGGER.info('Download time: %s, avg speed: %s KB/s' % (download_time, download_speed))
+                download_speed = int((f.tell() - orig_file_size) / download_time.total_seconds() / 1024)
+                speed_unit = 'KB/s'
+
+                if download_speed >= 1024:
+                    download_speed /= 1024.0
+                    download_speed = '%.2f' % download_speed
+                    speed_unit = 'MB/s'
+
+                LOGGER.info('Download time: %s, avg speed: %s %s' % (download_time, download_speed, speed_unit))
+
         return filename
 
-    def download_zip(self, file_id, dest='.'):
+    def download_zip(self, file_id, dest='.', progress_callback=None):
         """Downloads the contents of the file as a zip archive
 
         Returns the filename on success, or False otherwise.
@@ -276,7 +308,10 @@ class _File(object):
                 LOGGER.debug('Got zip url: %s', response['url'])
                 if 'size' in response:
                     LOGGER.debug('zip size: %s', response['size'])
-                return self.download(file_id, dest, url=response['url'])
+                if 'missing_files' in response and response['missing_files']:
+                    LOGGER.error('Missing files in zip, aborting zip download: %s (file id: %s)', zip_id, file_id)
+                    return False
+                return self.download(file_id, dest, url=response['url'], progress_callback=progress_callback)
 
             LOGGER.debug('Waiting for zipcheck')
             sleep(5)
@@ -300,7 +335,7 @@ class _File(object):
         return d['file']
 
     @staticmethod
-    def _write_data_with_progress(target_file, source, length):
+    def _write_data_with_progress(target_file, source, length, progress_callback=None):
         """Download a file with progress"""
         start_time = datetime.datetime.now()
         downloaded = 0
@@ -324,8 +359,24 @@ class _File(object):
             chunks += 1
             if not chunks % chunk_step:
                 download_time = datetime.datetime.now() - start_time
-                download_speed = int((chunks * wanted_chunksize) / download_time.total_seconds() / 1024)  # in KB/s
-                LOGGER.info('Download progress: %.1f%% (%dMB) speed: %d KB/s - (%s)', (100.0 * downloaded / length), downloaded/1024/1024, download_speed, download_time)
+                download_speed = int((chunks * wanted_chunksize) / download_time.total_seconds() / 1024)
+                speed_unit = 'KB/s'
+
+                if download_speed >= 1024:
+                    download_speed /= 1024
+                    speed_unit = 'MB/s'
+
+                s = 'Download progress: %.1f%% (%dMB) speed: %d %s - (Time: %s)' % ((100.0 * downloaded / length), downloaded/1024/1024, download_speed, speed_unit, download_time)
+                LOGGER.info(s)
+                if progress_callback:
+                    progress_callback({
+                        'string': s,
+                        'downloaded': downloaded,
+                        'length': length,
+                        'download_speed': download_speed,
+                        'speed_unit': speed_unit,
+                        'download_time': download_time
+                    })
 
 
 class _Transfer(object):
